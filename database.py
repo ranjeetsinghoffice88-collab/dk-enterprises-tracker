@@ -61,7 +61,7 @@ def init_db():
         )
     ''')
 
-    # Table 5: Leave Management (Fixed connection & schema)
+    # Table 5: Leave Management
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS leaves (
             leave_id INTEGER PRIMARY KEY AUTOINCREMENT,
