@@ -16,14 +16,18 @@ st.sidebar.header("Navigation")
 staff_list = ["Komal", "Vijay", "Navinder"]
 selected_emp = st.sidebar.selectbox("Select Employee", staff_list)
 
-mode = st.sidebar.radio("View Mode", ["Staff Entry", "Admin Dashboard"])
+# View Mode options including the new Policy & Guidelines Guide
+mode = st.sidebar.radio(
+    "View Mode", 
+    ["Staff Entry", "Admin Dashboard", "📖 Policy & User Guidelines"]
+)
 
 now_ist = get_india_now()
 today_str = now_ist.strftime("%Y-%m-%d")
 current_year = now_ist.year
 current_month = now_ist.month
 
-# Helper function to check monthly / yearly quotas
+# Helper function to check monthly / yearly quotas for leaves
 def evaluate_leave_rules(emp_name, l_type, l_days, target_date_str):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -36,7 +40,6 @@ def evaluate_leave_rules(emp_name, l_type, l_days, target_date_str):
     popup_msg = ""
     
     if l_type == "Planned Leave":
-        # Check how many planned leaves already taken/approved/pending in this month
         cursor.execute("""
             SELECT COALESCE(SUM(total_days), 0) FROM leaves 
             WHERE emp_name = ? AND leave_type = 'Planned Leave' AND status != 'Rejected'
@@ -52,7 +55,6 @@ def evaluate_leave_rules(emp_name, l_type, l_days, target_date_str):
             popup_msg = "⚠️ Notice: Mahine mein sirf 2 planned leaves ki limit hai. Limit se zyada hone par leaves Unplanned count hongi."
             
     elif l_type == "Sick Leave":
-        # Check yearly sick leave count (Quota = 7)
         cursor.execute("""
             SELECT COALESCE(SUM(total_days), 0) FROM leaves 
             WHERE emp_name = ? AND leave_type = 'Sick Leave' AND status != 'Rejected'
@@ -62,7 +64,7 @@ def evaluate_leave_rules(emp_name, l_type, l_days, target_date_str):
         
         if year_sick_count >= 7:
             calc_type = "Planned / Unplanned (Sick Quota Exhausted)"
-            popup_msg = "⚠️ Notice: Aapka saal ka 7 Sick Leaves ka quota pura ho chuka hai. Yeh leave ab standard Planned/Unplanned policy ke tahat count hogi."
+            popup_msg = "⚠️ Notice: Aapka saal ka 7 Sick Leaves ka quota pura ho chuka hai. Yeh leave ab standard policy ke tahat count hogi."
             
     conn.close()
     return calc_type, popup_msg
@@ -148,18 +150,19 @@ if mode == "Staff Entry":
 
     st.divider()
 
-    # Section 3: Leave Application Module (New Corporate Feature)
+    # Section 3: Leave Application Module
     st.markdown("### 🌴 Leave Application & Team Planner")
+    st.info("💡 **Note:** Aap yahan se future ki planned leave ya agar koi past leave chhut gayi ho toh uski bhi flexible dates select karke apply kar sakte hain. Submit hone ke baad status **'Pending'** dikhega jab tak admin approve na karein.")
     
     with st.form("leave_apply_form", clear_on_submit=True):
         col_l1, col_l2 = st.columns(2)
         with col_l1:
             leave_type = st.selectbox("Leave Type", ["Planned Leave", "Sick Leave", "Half-Day Leave", "Unplanned Leave"])
         with col_l2:
-            date_range = st.date_input("Select Leave Date(s)", [now_ist.date(), now_ist.date()])
+            date_range = st.date_input("Select Leave Date(s) [Flexible Calendar]", [now_ist.date(), now_ist.date()])
             
         leave_reason = st.text_area("Reason / Handover Notes", placeholder="Mention reason and who will handle your work during absence...")
-        submit_leave = st.form_submit_button("📤 Submit Leave Application (Pending Approval)")
+        submit_leave = st.form_submit_button("📤 Submit Leave Application")
         
         if submit_leave:
             if isinstance(date_range, list) and len(date_range) == 2:
@@ -187,7 +190,7 @@ if mode == "Staff Entry":
             """, (selected_emp, leave_type, f_str, t_str, total_days, leave_reason, calc_res, applied_ts))
             conn.commit()
             conn.close()
-            st.success("Leave application submitted successfully! Status is currently **Pending** approval from management.")
+            st.success("Leave application submitted successfully! Status is currently **Pending**.")
             st.rerun()
 
     st.markdown("#### 📅 Team Leave Schedule & Transparency Board")
@@ -317,7 +320,7 @@ elif mode == "Admin Dashboard":
 
     conn = sqlite3.connect(DB_NAME)
 
-    # NAYA SECTION: Leave Approval Management Panel for Admin
+    # Leave Approval Management Panel for Admin
     st.markdown("### 📥 Pending Leave Requests (Approval Panel)")
     df_pending_leaves = pd.read_sql_query("""
         SELECT leave_id, emp_name as Employee, leave_type as 'Type', from_date as 'From', to_date as 'To', 
@@ -446,3 +449,67 @@ elif mode == "Admin Dashboard":
             st.download_button("📥 Leave Records CSV", data=csv_leaves, file_name=f"dk_leaves_{today_str}.csv", mime="text/csv", use_container_width=True)
 
     conn.close()
+
+# ---------------------------------------------------------
+# VIEW 3: POLICY & USER GUIDELINES (NEW SECTION)
+# ---------------------------------------------------------
+elif mode == "📖 Policy & User Guidelines":
+    st.subheader("📖 D.K. Enterprises - Tracker User Manual & Corporate Policies")
+    st.markdown("Yeh guide sabhi employees aur management ke liye hai taaki sabhi log tracker ko properly use karna aur office rules samajhna aasan ho sake.")
+
+    st.markdown("---")
+
+    # Step-by-Step Staff Workflow
+    st.markdown("### 🧑‍💼 Part 1: Employee Step-by-Step Daily Workflow")
+    
+    st.markdown("""
+    1. **Step 1: Select Your Name**  
+       - Sidebar mein jaakar **'Select Employee'** dropdown se apna naam (**Komal**, **Vijay**, ya **Navinder**) select karein.
+    
+    2. **Step 2: Morning Check-In**  
+       - Office aate hi sabse pehle **Staff Entry** mode mein **🟢 Morning Check-In** button par click karein. (Aapko exact timestamp mil jayega).
+
+    3. **Step 3: Dress Code Verification**  
+       - Check-in ke turant baad daily dress code select karein (**Yes, Full Uniform** ya **No / Casual**). Agar uniform nahi hai toh reason enter karke submit karein.
+
+    4. **Step 4: Start Daily Production / Activity**  
+       - Live Activity section mein jaakar apna task type select karein (jaise **Production**, **Break**, ya **Others**) aur **▶️ Start Activity Now** dabayein. 
+       - *Note:* Nayi activity shuru karte hi purani wali automatic stop ho jayegi aur duration calculate ho jayega. Kaam khatam hone par **⏹️ Stop Current Activity** click karein.
+
+    5. **Step 5: Evening Check-Out**  
+       - Shift complete hone par **🔴 Evening Check-Out** button par click karein.
+    """)
+
+    st.markdown("---")
+
+    # Leave Application & Policies Guide
+    st.markdown("### 🌴 Part 2: Leave Application & Corporate Leave Rules")
+    
+    st.markdown("""
+    - **Flexible Calendar Leave Apply:**  
+      Aap kisi bhi waqt future ki planned leave ya agar koi past leave apply karna bhool gaye the toh uski flexible dates select karke apply kar sakte hain.
+    - **Pending Status:**  
+      Jaise hi aap leave apply karenge, uska status **'Pending'** dikhega jab tak admin usse approve na karein.
+    - **Team Transparency Board:**  
+      Neeche diye gaye Team Leave Board se baaki saare employees aware reh sakte hain ki kaun kis date par absent rahega, taaki office ka kaam us hisab se manage ho sake.
+    
+    **Corporate Leave Rules & Limits:**
+    1. **Planned Leave Limit:** Ek mahine mein sirf **2 Planned Leaves** allowed hain. Agar aap 2 se zyada planned leave lenge, toh system warning dega aur wo **Unplanned / LWP** count hongi.
+    2. **Sick Leave Quota:** Har employee saal mein **7 Sick Leaves** le sakta hai. 7 sick leaves complete hone ke baad agli leave standard policy ke tahat count hogi.
+    3. **Unplanned Leaves:** Agar unplanned leaves limit se zyada hongi toh wo Leave Without Pay (LWP) mein convert hongi.
+    """)
+
+    st.markdown("---")
+
+    # Admin Dashboard Guide
+    st.markdown("### 🔒 Part 3: Admin Dashboard & Review Guide (For Management)")
+    
+    st.markdown("""
+    Agar aap **Admin Dashboard** mode select karte hain, toh aapko ye features milte hain:
+    1. **Leave Approvals Panel:**  
+       Staff dwara apply ki gayi sabhi pending leave requests yahan show hongi. Aap drop-down se Leave ID select karke use **'Approve'** ya **'Reject / Not Approved'** kar sakte hain.
+    2. **Daily Attendance & Uniform Review:**  
+       Kisi bhi selected date ki attendance summary aur dress code compliance report ek click par dekh sakte hain.
+    3. **Historical Data & CSV Backups:**  
+       Past dates ki activity history filter karne ke liye date range select karein, aur poore data ka secure backup download karne ke liye CSV download buttons use karein.
+    """)
