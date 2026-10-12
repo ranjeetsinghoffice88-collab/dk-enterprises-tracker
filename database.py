@@ -61,6 +61,22 @@ def init_db():
         )
     ''')
 
+    # Table 5: Leave Management (New Corporate Leave Table)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS leaves (
+            leave_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            emp_name TEXT NOT NULL,
+            leave_type TEXT NOT NULL,
+            from_date TEXT NOT NULL,
+            to_date TEXT NOT NULL,
+            total_days INTEGER NOT NULL,
+            reason TEXT,
+            status TEXT DEFAULT 'Pending',
+            calculated_type TEXT,
+            applied_at TEXT NOT NULL
+        )
+    ''')
+
     # D.K. Enterprises Staff Members
     dk_staff = [("Komal", "Operations"), ("Vijay", "Operations"), ("Navinder", "Operations")]
     for name, dept in dk_staff:
