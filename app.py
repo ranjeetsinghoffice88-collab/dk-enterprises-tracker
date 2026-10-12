@@ -1,6 +1,6 @@
 import streamlit as st
 import sqlite3
-from datetime import datetime
+from datetime import datetime, date
 import pandas as pd
 from zoneinfo import ZoneInfo
 from database import DB_NAME, get_india_now, init_db
@@ -20,6 +20,52 @@ mode = st.sidebar.radio("View Mode", ["Staff Entry", "Admin Dashboard"])
 
 now_ist = get_india_now()
 today_str = now_ist.strftime("%Y-%m-%d")
+current_year = now_ist.year
+current_month = now_ist.month
+
+# Helper function to check monthly / yearly quotas
+def evaluate_leave_rules(emp_name, l_type, l_days, target_date_str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    target_dt = datetime.strptime(target_date_str, "%Y-%m-%d")
+    t_year = target_dt.year
+    t_month = target_dt.month
+    
+    calc_type = l_type
+    popup_msg = ""
+    
+    if l_type == "Planned Leave":
+        # Check how many planned leaves already taken/approved/pending in this month
+        cursor.execute("""
+            SELECT COALESCE(SUM(total_days), 0) FROM leaves 
+            WHERE emp_name = ? AND leave_type = 'Planned Leave' AND status != 'Rejected'
+            AND strftime('%Y', from_date) = ? AND strftime('%m', from_date) = ?
+        """, (emp_name, str(t_year), f"{t_month:02d}"))
+        month_planned_count = cursor.fetchone()[0]
+        
+        if month_planned_count >= 2:
+            calc_type = "Unplanned / LWP (Exceeded Monthly Planned Limit)"
+            popup_msg = "⚠️ Notice: Aap apni monthly 2 planned leaves already complete kar chuke hain, isliye yeh leave Unplanned count hogi."
+        elif (month_planned_count + l_days) > 2:
+            calc_type = "Mixed / Unplanned for extra days"
+            popup_msg = "⚠️ Notice: Mahine mein sirf 2 planned leaves ki limit hai. Limit se zyada hone par leaves Unplanned count hongi."
+            
+    elif l_type == "Sick Leave":
+        # Check yearly sick leave count (Quota = 7)
+        cursor.execute("""
+            SELECT COALESCE(SUM(total_days), 0) FROM leaves 
+            WHERE emp_name = ? AND leave_type = 'Sick Leave' AND status != 'Rejected'
+            AND strftime('%Y', from_date) = ?
+        """, (emp_name, str(t_year)))
+        year_sick_count = cursor.fetchone()[0]
+        
+        if year_sick_count >= 7:
+            calc_type = "Planned / Unplanned (Sick Quota Exhausted)"
+            popup_msg = "⚠️ Notice: Aapka saal ka 7 Sick Leaves ka quota pura ho chuka hai. Yeh leave ab standard Planned/Unplanned policy ke tahat count hogi."
+            
+    conn.close()
+    return calc_type, popup_msg
 
 # ---------------------------------------------------------
 # VIEW 1: STAFF ENTRY
@@ -102,7 +148,65 @@ if mode == "Staff Entry":
 
     st.divider()
 
-    # Section 3: Live Activity Tracker
+    # Section 3: Leave Application Module (New Corporate Feature)
+    st.markdown("### 🌴 Leave Application & Team Planner")
+    
+    with st.form("leave_apply_form", clear_on_submit=True):
+        col_l1, col_l2 = st.columns(2)
+        with col_l1:
+            leave_type = st.selectbox("Leave Type", ["Planned Leave", "Sick Leave", "Half-Day Leave", "Unplanned Leave"])
+        with col_l2:
+            date_range = st.date_input("Select Leave Date(s)", [now_ist.date(), now_ist.date()])
+            
+        leave_reason = st.text_area("Reason / Handover Notes", placeholder="Mention reason and who will handle your work during absence...")
+        submit_leave = st.form_submit_button("📤 Submit Leave Application (Pending Approval)")
+        
+        if submit_leave:
+            if isinstance(date_range, list) and len(date_range) == 2:
+                f_date, t_date = date_range
+            elif isinstance(date_range, tuple) and len(date_range) == 2:
+                f_date, t_date = date_range
+            else:
+                f_date = t_date = date_range if not isinstance(date_range, list) else date_range[0]
+                
+            f_str = f_date.strftime("%Y-%m-%d")
+            t_str = t_date.strftime("%Y-%m-%d")
+            total_days = (t_date - f_date).days + 1
+            
+            calc_res, warning_msg = evaluate_leave_rules(selected_emp, leave_type, total_days, f_str)
+            if warning_msg:
+                st.warning(warning_msg)
+                
+            applied_ts = get_india_now().strftime("%Y-%m-%d %I:%M %p")
+            
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO leaves (emp_name, leave_type, from_date, to_date, total_days, reason, status, calculated_type, applied_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
+            """, (selected_emp, leave_type, f_str, t_str, total_days, leave_reason, calc_res, applied_ts))
+            conn.commit()
+            conn.close()
+            st.success("Leave application submitted successfully! Status is currently **Pending** approval from management.")
+            st.rerun()
+
+    st.markdown("#### 📅 Team Leave Schedule & Transparency Board")
+    conn = sqlite3.connect(DB_NAME)
+    df_team_leaves = pd.read_sql_query("""
+        SELECT emp_name as Employee, leave_type as 'Type', from_date as 'From', to_date as 'To', 
+               total_days as Days, status as Status, calculated_type as 'Policy Category', reason as Reason
+        FROM leaves ORDER BY leave_id DESC
+    """, conn)
+    conn.close()
+    
+    if not df_team_leaves.empty:
+        st.dataframe(df_team_leaves, use_container_width=True, hide_index=True)
+    else:
+        st.info("No leave records found.")
+
+    st.divider()
+
+    # Section 4: Live Activity Tracker
     st.markdown("### ⏱️ Live Activity Tracker")
     
     conn = sqlite3.connect(DB_NAME)
@@ -206,12 +310,44 @@ if mode == "Staff Entry":
 # VIEW 2: ADMIN DASHBOARD & HISTORICAL RECORDS
 # ---------------------------------------------------------
 elif mode == "Admin Dashboard":
-    st.subheader("🔒 Admin Dashboard (Time, Dress Code & History Overview)")
+    st.subheader("🔒 Admin Dashboard (Time, Dress Code, Leave Approvals & History)")
     
     selected_date = st.date_input("Select Single Date View", now_ist.date())
     date_str = selected_date.strftime("%Y-%m-%d")
 
     conn = sqlite3.connect(DB_NAME)
+
+    # NAYA SECTION: Leave Approval Management Panel for Admin
+    st.markdown("### 📥 Pending Leave Requests (Approval Panel)")
+    df_pending_leaves = pd.read_sql_query("""
+        SELECT leave_id, emp_name as Employee, leave_type as 'Type', from_date as 'From', to_date as 'To', 
+               total_days as Days, calculated_type as 'Policy Applied', reason as Reason, applied_at as 'Applied At'
+        FROM leaves WHERE status = 'Pending' ORDER BY leave_id DESC
+    """, conn)
+    
+    if not df_pending_leaves.empty:
+        st.dataframe(df_pending_leaves, use_container_width=True, hide_index=True)
+        
+        with st.form("admin_leave_action_form"):
+            col_a1, col_a2, col_a3 = st.columns([2, 1, 1])
+            with col_a1:
+                selected_leave_id = st.selectbox("Select Leave ID to Process", df_pending_leaves['leave_id'].tolist())
+            with col_a2:
+                action_decision = st.selectbox("Action", ["Approve", "Reject / Not Approved"])
+            with col_a3:
+                submit_action = st.form_submit_button("Update Leave Status")
+                
+            if submit_action:
+                new_status = "Approved" if action_decision == "Approve" else "Rejected"
+                cursor = conn.cursor()
+                cursor.execute("UPDATE leaves SET status = ? WHERE leave_id = ?", (new_status, selected_leave_id))
+                conn.commit()
+                st.success(f"Leave ID {selected_leave_id} status updated to **{new_status}**!")
+                st.rerun()
+    else:
+        st.info("No pending leave requests right now.")
+
+    st.divider()
 
     # Attendance Summary
     st.markdown(f"#### 📅 Attendance Summary for {date_str}")
@@ -268,56 +404,45 @@ elif mode == "Admin Dashboard":
         df_hist_tasks = pd.read_sql_query(query_hist_tasks, conn, params=params_tasks)
         st.dataframe(df_hist_tasks, use_container_width=True, hide_index=True)
 
-        # Historical Dress Code Log
-        st.markdown(f"##### 👔 Dress Code History ({from_date_str} to {to_date_str})")
-        params_dress = selected_staff_filter + [from_date_str, to_date_str]
-        query_hist_dress = f"""
-            SELECT date as Date, emp_name as Employee, in_uniform as 'In Uniform', reason as Reason, timestamp as Timestamp
-            FROM dress_code 
-            WHERE emp_name IN ({placeholders}) AND date BETWEEN ? AND ? 
-            ORDER BY date DESC
+        # Historical Leave Log
+        st.markdown(f"##### 🌴 Leave History ({from_date_str} to {to_date_str})")
+        params_leave = selected_staff_filter + [from_date_str, to_date_str]
+        query_hist_leave = f"""
+            SELECT from_date as 'From', to_date as 'To', emp_name as Employee, leave_type as Type, 
+                   total_days as Days, status as Status, calculated_type as 'Policy Applied', reason as Reason
+            FROM leaves 
+            WHERE emp_name IN ({placeholders}) AND from_date BETWEEN ? AND ? 
+            ORDER BY leave_id DESC
         """
-        df_hist_dress = pd.read_sql_query(query_hist_dress, conn, params=params_dress)
-        st.dataframe(df_hist_dress, use_container_width=True, hide_index=True)
+        df_hist_leave = pd.read_sql_query(query_hist_leave, conn, params=params_leave)
+        st.dataframe(df_hist_leave, use_container_width=True, hide_index=True)
 
     st.divider()
     st.markdown("### 📥 Download Database Backup CSVs")
-    col_d1, col_d2, col_d3 = st.columns(3)
+    col_d1, col_d2, col_d3, col_d4 = st.columns(4)
     
     with col_d1:
         df_all_attn = pd.read_sql_query("SELECT * FROM attendance", conn)
         if not df_all_attn.empty:
             csv_attn = df_all_attn.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Attendance CSV",
-                data=csv_attn,
-                file_name=f"dk_attendance_backup_{today_str}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+            st.download_button("📥 Attendance CSV", data=csv_attn, file_name=f"dk_attendance_{today_str}.csv", mime="text/csv", use_container_width=True)
 
     with col_d2:
         df_all_tasks_db = pd.read_sql_query("SELECT * FROM live_tasks", conn)
         if not df_all_tasks_db.empty:
             csv_tasks = df_all_tasks_db.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Tasks Backup CSV",
-                data=csv_tasks,
-                file_name=f"dk_tasks_backup_{today_str}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+            st.download_button("📥 Tasks CSV", data=csv_tasks, file_name=f"dk_tasks_{today_str}.csv", mime="text/csv", use_container_width=True)
 
     with col_d3:
         df_all_dress = pd.read_sql_query("SELECT * FROM dress_code", conn)
         if not df_all_dress.empty:
             csv_dress = df_all_dress.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Dress Code CSV",
-                data=csv_dress,
-                file_name=f"dk_dress_code_backup_{today_str}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+            st.download_button("📥 Dress Code CSV", data=csv_dress, file_name=f"dk_dress_{today_str}.csv", mime="text/csv", use_container_width=True)
+
+    with col_d4:
+        df_all_leaves = pd.read_sql_query("SELECT * FROM leaves", conn)
+        if not df_all_leaves.empty:
+            csv_leaves = df_all_leaves.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Leave Records CSV", data=csv_leaves, file_name=f"dk_leaves_{today_str}.csv", mime="text/csv", use_container_width=True)
 
     conn.close()
