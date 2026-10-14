@@ -46,13 +46,10 @@ def calculate_exact_duration(row):
         start_str = str(row.get('start_time', '')).strip()
         end_str = str(row.get('end_time', '')).strip()
         
-        # Ongoing / In progress status check
         if status == "Ongoing" or "In Progress" in end_str or "Running" in end_str or not end_str:
             return "Running"
         
-        # Format list to handle multiple time formats (%I:%M %p, %H:%M, etc.)
         time_formats = ("%I:%M %p", "%H:%M", "%I:%M:%S %p", "%H:%M:%S")
-        
         t1, t2 = None, None
         for fmt in time_formats:
             if not t1:
@@ -69,10 +66,9 @@ def calculate_exact_duration(row):
         if t1 and t2:
             diff_seconds = (t2 - t1).total_seconds()
             if diff_seconds < 0:
-                diff_seconds += 24 * 3600 # Overnight adjustment
+                diff_seconds += 24 * 3600
                 
             total_mins = int(diff_seconds // 60)
-            
             if total_mins < 60:
                 return f"{total_mins} mins"
             else:
@@ -149,21 +145,39 @@ def evaluate_leave_rules(emp_name, l_type, l_days, target_date_str):
 if mode == "Staff Entry":
     st.subheader(f"Welcome, {selected_emp} 👋")
     
+    # 1. Check Attendance Status for Selected Employee Today
+    df_att = fetch_df("dk_attendance")
+    is_checked_in = False
+    check_in_time = ""
+    
+    if not df_att.empty and 'emp_name' in df_att.columns:
+        matched_att = df_att[(df_att['emp_name'] == selected_emp) & (df_att['date'] == today_str)]
+        if not matched_att.empty:
+            is_checked_in = True
+            check_in_time = matched_att.iloc[0].get('check_in', '')
+
+    # 2. Check Active Tasks Status for Selected Employee Today
+    df_tasks = fetch_df("dk_live_tasks")
+    emp_today_tasks = pd.DataFrame()
+    has_active_running_task = False
+    active_task_name = ""
+
+    if not df_tasks.empty and 'emp_name' in df_tasks.columns:
+        emp_today_tasks = df_tasks[(df_tasks['emp_name'] == selected_emp) & (df_tasks['date'] == today_str)]
+        if not emp_today_tasks.empty and 'status' in emp_today_tasks.columns:
+            act_match = emp_today_tasks[emp_today_tasks['status'] == 'Ongoing']
+            if not act_match.empty:
+                has_active_running_task = True
+                active_task_name = act_match.iloc[0].get('activity_type', 'Task')
+
     st.markdown("### ⏰ Daily Attendance")
     col1, col2, col3 = st.columns([1, 1, 2])
     
     with col1:
         if st.button("🟢 Morning Check-In", use_container_width=True):
             now_time = get_india_now().strftime("%I:%M %p")
-            df_att = fetch_df("dk_attendance")
-            already_in = False
-            if not df_att.empty and 'emp_name' in df_att.columns:
-                matched = df_att[(df_att['emp_name'] == selected_emp) & (df_att['date'] == today_str)]
-                if not matched.empty:
-                    already_in = True
-                    
-            if already_in:
-                st.warning("Already checked in today!")
+            if is_checked_in:
+                st.warning(f"Already checked in today at {check_in_time}!")
             else:
                 new_id = len(df_att) + 1
                 if insert_row("dk_attendance", [new_id, selected_emp, today_str, now_time, ""]):
@@ -172,100 +186,105 @@ if mode == "Staff Entry":
 
     with col2:
         if st.button("🔴 Evening Check-Out", use_container_width=True):
-            now_time = get_india_now().strftime("%I:%M %p")
-            success = update_attendance_checkout(selected_emp, today_str, now_time)
-            if success:
-                st.success(f"Checked out successfully at {now_time}")
-                st.rerun()
-            else:
+            # CHECKOUT RULE: Block Checkout if any activity is still Ongoing
+            if has_active_running_task:
+                st.error(f"⚠️ **Checkout Blocked:** Pehle apni active activity ('{active_task_name}') ko Stop/Close karein, fir Evening Check-Out karein!")
+            elif not is_checked_in:
                 st.warning("No check-in record found for today!")
+            else:
+                now_time = get_india_now().strftime("%I:%M %p")
+                success = update_attendance_checkout(selected_emp, today_str, now_time)
+                if success:
+                    st.success(f"Checked out successfully at {now_time}")
+                    st.rerun()
+                else:
+                    st.warning("Could not update checkout record. Please try again.")
 
     st.divider()
 
-    st.markdown("### 👔 Daily Dress Code Verification")
-    df_dress = fetch_df("dk_dress_code")
-    today_dress = None
-    if not df_dress.empty and 'emp_name' in df_dress.columns:
-        matched = df_dress[(df_dress['emp_name'] == selected_emp) & (df_dress['date'] == today_str)]
-        if not matched.empty:
-            today_dress = matched.iloc[0]
-
-    if today_dress is not None and not today_dress.empty:
-        st.success(f"✅ Today's Uniform Status Submitted: **{today_dress.get('in_uniform', 'Yes')}**")
+    # CHECK-IN MANDATORY RULE: Lock Dress Code & Activity Tracker until Check-In is done
+    if not is_checked_in:
+        st.error(f"🔒 **Check-In Mandatory:** Please complete your morning check-in first before submitting dress code or starting any activity!")
     else:
-        with st.form("dress_code_form", clear_on_submit=False):
-            dress_opt = st.radio("Are you wearing the official office uniform / dress code today?", ["Yes, Full Uniform 🟢", "No / Casual / Partial 🔴"], horizontal=True)
-            reason_input = st.text_input("If 'No', please state the reason:", placeholder="e.g., Uniform being washed / Emergency")
-            submit_dress = st.form_submit_button("Submit Dress Code Status")
+        st.markdown("### 👔 Daily Dress Code Verification")
+        df_dress = fetch_df("dk_dress_code")
+        today_dress = None
+        if not df_dress.empty and 'emp_name' in df_dress.columns:
+            matched = df_dress[(df_dress['emp_name'] == selected_emp) & (df_dress['date'] == today_str)]
+            if not matched.empty:
+                today_dress = matched.iloc[0]
 
-            if submit_dress:
-                is_uniform = "Yes" if "Yes" in dress_opt else "No"
-                now_ts = get_india_now().strftime("%Y-%m-%d %I:%M %p")
-                new_id = len(df_dress) + 1
-                if insert_row("dk_dress_code", [new_id, selected_emp, today_str, is_uniform, reason_input if is_uniform == "No" else "-", now_ts]):
-                    st.success("Dress code status recorded successfully!")
+        if today_dress is not None and not today_dress.empty:
+            st.success(f"✅ Today's Uniform Status Submitted: **{today_dress.get('in_uniform', 'Yes')}**")
+        else:
+            with st.form("dress_code_form", clear_on_submit=False):
+                dress_opt = st.radio("Are you wearing the official office uniform / dress code today?", ["Yes, Full Uniform 🟢", "No / Casual / Partial 🔴"], horizontal=True)
+                reason_input = st.text_input("If 'No', please state the reason:", placeholder="e.g., Uniform being washed / Emergency")
+                submit_dress = st.form_submit_button("Submit Dress Code Status")
+
+                if submit_dress:
+                    is_uniform = "Yes" if "Yes" in dress_opt else "No"
+                    now_ts = get_india_now().strftime("%Y-%m-%d %I:%M %p")
+                    new_id = len(df_dress) + 1
+                    if insert_row("dk_dress_code", [new_id, selected_emp, today_str, is_uniform, reason_input if is_uniform == "No" else "-", now_ts]):
+                        st.success("Dress code status recorded successfully!")
+                        st.rerun()
+
+        st.divider()
+
+        st.markdown("### ⏱️ Live Activity Tracker")
+        active_task = None
+        if not emp_today_tasks.empty and 'status' in emp_today_tasks.columns:
+            act_match = emp_today_tasks[emp_today_tasks['status'] == 'Ongoing']
+            if not act_match.empty:
+                active_task = act_match.iloc[0]
+
+        if active_task is not None:
+            st.info(f"⏳ Currently Active: **{active_task['activity_type']}** (Started at {active_task['start_time']})")
+            if st.button("⏹️ Stop Current Activity", type="primary"):
+                try:
+                    ws = get_cached_worksheet("dk_live_tasks")
+                    records = ws.get_all_records()
+                    end_time_str = get_india_now().strftime("%I:%M %p")
+                    for idx, row in enumerate(records, start=2):
+                        if str(row.get("emp_name")) == str(selected_emp) and str(row.get("date")) == str(today_str) and str(row.get("status")) == "Ongoing":
+                            temp_row = row.copy()
+                            temp_row['end_time'] = end_time_str
+                            temp_row['status'] = "Completed"
+                            dur_calc = calculate_exact_duration(temp_row)
+                            
+                            ws.update_cell(idx, 6, end_time_str) # End time column
+                            ws.update_cell(idx, 7, dur_calc)     # Duration column
+                            ws.update_cell(idx, 10, "Completed") # Status column
+                            break
+                    st.cache_data.clear()
+                    st.success("Activity stopped and completed successfully!")
                     st.rerun()
+                except Exception:
+                    st.error("Connection lag. Please click Stop again.")
+        else:
+            with st.form("start_activity_form"):
+                act_type = st.selectbox("Select Activity / Task Type", ["Production", "Quality Check", "Client Meeting", "Admin Work", "Break / Lunch", "Others"])
+                priority = st.selectbox("Priority", ["Low", "Medium", "High", "Urgent"])
+                desc = st.text_input("Task Description / Notes", placeholder="e.g., Working on client order processing...")
+                start_act_btn = st.form_submit_button("▶️ Start New Activity")
 
-    st.divider()
+                if start_act_btn:
+                    start_time_str = get_india_now().strftime("%I:%M %p")
+                    new_task_id = len(df_tasks) + 1 if not df_tasks.empty else 1
+                    if insert_row("dk_live_tasks", [new_task_id, selected_emp, today_str, act_type, start_time_str, "In Progress...", "Running", desc, priority, "Ongoing"]):
+                        st.success(f"Started '{act_type}' successfully!")
+                        st.rerun()
 
-    st.markdown("### ⏱️ Live Activity Tracker")
-    df_tasks = fetch_df("dk_live_tasks")
-    emp_today_tasks = pd.DataFrame()
-    if not df_tasks.empty and 'emp_name' in df_tasks.columns:
-        emp_today_tasks = df_tasks[(df_tasks['emp_name'] == selected_emp) & (df_tasks['date'] == today_str)]
-
-    active_task = None
-    if not emp_today_tasks.empty and 'status' in emp_today_tasks.columns:
-        act_match = emp_today_tasks[emp_today_tasks['status'] == 'Ongoing']
-        if not act_match.empty:
-            active_task = act_match.iloc[0]
-
-    if active_task is not None:
-        st.info(f"⏳ Currently Active: **{active_task['activity_type']}** (Started at {active_task['start_time']})")
-        if st.button("⏹️ Stop Current Activity", type="primary"):
-            try:
-                ws = get_cached_worksheet("dk_live_tasks")
-                records = ws.get_all_records()
-                end_time_str = get_india_now().strftime("%I:%M %p")
-                for idx, row in enumerate(records, start=2):
-                    if str(row.get("emp_name")) == str(selected_emp) and str(row.get("date")) == str(today_str) and str(row.get("status")) == "Ongoing":
-                        temp_row = row.copy()
-                        temp_row['end_time'] = end_time_str
-                        temp_row['status'] = "Completed"
-                        dur_calc = calculate_exact_duration(temp_row)
-                        
-                        ws.update_cell(idx, 6, end_time_str) # End time column
-                        ws.update_cell(idx, 7, dur_calc)     # Duration column
-                        ws.update_cell(idx, 10, "Completed") # Status column
-                        break
-                st.cache_data.clear()
-                st.success("Activity stopped and completed successfully!")
-                st.rerun()
-            except Exception:
-                st.error("Connection lag. Please click Stop again.")
-    else:
-        with st.form("start_activity_form"):
-            act_type = st.selectbox("Select Activity / Task Type", ["Production", "Quality Check", "Client Meeting", "Admin Work", "Break / Lunch", "Others"])
-            priority = st.selectbox("Priority", ["Low", "Medium", "High", "Urgent"])
-            desc = st.text_input("Task Description / Notes", placeholder="e.g., Working on client order processing...")
-            start_act_btn = st.form_submit_button("▶️ Start New Activity")
-
-            if start_act_btn:
-                start_time_str = get_india_now().strftime("%I:%M %p")
-                new_task_id = len(df_tasks) + 1 if not df_tasks.empty else 1
-                if insert_row("dk_live_tasks", [new_task_id, selected_emp, today_str, act_type, start_time_str, "In Progress...", "Running", desc, priority, "Ongoing"]):
-                    st.success(f"Started '{act_type}' successfully!")
-                    st.rerun()
-
-    st.markdown(f"#### 📊 Today's Activity Timeline for {selected_emp} ({today_str})")
-    if not emp_today_tasks.empty:
-        display_df = emp_today_tasks.copy()
-        display_df['duration'] = display_df.apply(calculate_exact_duration, axis=1)
-        st.dataframe(display_df[['activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'priority', 'status']].rename(
-            columns={'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'priority': 'Priority', 'status': 'Status'}
-        ), use_container_width=True, hide_index=True)
-    else:
-        st.info("No activities recorded for today yet.")
+        st.markdown(f"#### 📊 Today's Activity Timeline for {selected_emp} ({today_str})")
+        if not emp_today_tasks.empty:
+            display_df = emp_today_tasks.copy()
+            display_df['duration'] = display_df.apply(calculate_exact_duration, axis=1)
+            st.dataframe(display_df[['activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'priority', 'status']].rename(
+                columns={'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'priority': 'Priority', 'status': 'Status'}
+            ), use_container_width=True, hide_index=True)
+        else:
+            st.info("No activities recorded for today yet.")
 
     st.divider()
 
@@ -414,7 +433,7 @@ elif mode == "Admin Dashboard":
         if not filtered_tasks.empty:
             filtered_tasks['duration'] = filtered_tasks.apply(calculate_exact_duration, axis=1)
             st.dataframe(filtered_tasks[['date', 'emp_name', 'activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'status']].rename(
-                columns={'date': 'Date', 'emp_name': 'Employee', 'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'status': 'Status'}
+                columns={'date': 'Date', 'emp_name': 'Employee', 'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'priority': 'Priority', 'status': 'Status'}
             ), use_container_width=True, hide_index=True)
         else:
             st.info("No records found in this date range.")
@@ -457,8 +476,8 @@ elif mode == "📖 Policy & User Guidelines":
 
     ### 👤 Part 1: Employee Daily Workflow
 
-    1. **Step 1: Profile Selection & Attendance**
-       - Select your profile and log your check-in and check-out timestamps.
-    2. **Step 2: Live Activity Tracking**
-       - Track live tasks. Once stopped, exact activity durations are calculated automatically in minutes or hours.
+    1. **Step 1: Mandatory Morning Check-In**
+       - Select your profile and log your check-in timestamp. Check-In is strictly mandatory before accessing Dress Code and Activity Tracker sections.
+    2. **Step 2: Live Activity Tracking & Proper Closure**
+       - Track live tasks. All running activities must be stopped/closed before initiating Evening Check-Out.
     """)
