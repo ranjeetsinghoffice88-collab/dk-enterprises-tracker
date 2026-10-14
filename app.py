@@ -1,6 +1,7 @@
 import streamlit as st
 from datetime import datetime, date
 import pandas as pd
+import time
 from zoneinfo import ZoneInfo
 from database import get_india_now, get_spreadsheet, init_db
 import gspread
@@ -12,8 +13,8 @@ st.title("📋 D.K. Enterprises - Daily Staff Tracker & Workboard")
 
 st.sidebar.header("Navigation")
 
-# Cache sheet data for 60 seconds to prevent 429 Quota Exceeded error
-@st.cache_data(ttl=60)
+# Caching Data Reading for 30 Seconds
+@st.cache_data(ttl=30)
 def fetch_df(table_name):
     try:
         sheet = get_spreadsheet()
@@ -23,11 +24,21 @@ def fetch_df(table_name):
     except Exception:
         return pd.DataFrame()
 
+# Robust Row Insert with Retry Logic
 def insert_row(table_name, row_data):
     sheet = get_spreadsheet()
     ws = sheet.worksheet(table_name)
-    ws.append_row(row_data)
-    st.cache_data.clear()
+    
+    # Retry loop if API hits quota during concurrent inserts
+    for attempt in range(3):
+        try:
+            ws.append_row(row_data)
+            st.cache_data.clear()
+            return True
+        except Exception:
+            time.sleep(1)
+    st.error("Server busy! Please try clicking again in a few seconds.")
+    return False
 
 df_emp = fetch_df("dk_employees")
 staff_list = df_emp['name'].tolist() if not df_emp.empty and 'name' in df_emp.columns else ["Komal", "Vijay", "Navinder"]
@@ -43,14 +54,17 @@ now_ist = get_india_now()
 today_str = now_ist.strftime("%Y-%m-%d")
 
 def update_attendance_checkout(emp_name, date_val, out_time):
-    sheet = get_spreadsheet()
-    ws = sheet.worksheet("dk_attendance")
-    records = ws.get_all_records()
-    for idx, row in enumerate(records, start=2):
-        if str(row.get("emp_name")) == str(emp_name) and str(row.get("date")) == str(date_val):
-            ws.update_cell(idx, 5, out_time)
-            st.cache_data.clear()
-            return True
+    try:
+        sheet = get_spreadsheet()
+        ws = sheet.worksheet("dk_attendance")
+        records = ws.get_all_records()
+        for idx, row in enumerate(records, start=2):
+            if str(row.get("emp_name")) == str(emp_name) and str(row.get("date")) == str(date_val):
+                ws.update_cell(idx, 5, out_time)
+                st.cache_data.clear()
+                return True
+    except Exception:
+        pass
     return False
 
 def evaluate_leave_rules(emp_name, l_type, l_days, target_date_str):
@@ -107,9 +121,9 @@ if mode == "Staff Entry":
                 st.warning("Already checked in today!")
             else:
                 new_id = len(df_att) + 1
-                insert_row("dk_attendance", [new_id, selected_emp, today_str, now_time, ""])
-                st.success(f"Checked in successfully at {now_time}")
-                st.rerun()
+                if insert_row("dk_attendance", [new_id, selected_emp, today_str, now_time, ""]):
+                    st.success(f"Checked in successfully at {now_time}")
+                    st.rerun()
 
     with col2:
         if st.button("🔴 Evening Check-Out", use_container_width=True):
@@ -143,9 +157,9 @@ if mode == "Staff Entry":
                 is_uniform = "Yes" if "Yes" in dress_opt else "No"
                 now_ts = get_india_now().strftime("%Y-%m-%d %I:%M %p")
                 new_id = len(df_dress) + 1
-                insert_row("dk_dress_code", [new_id, selected_emp, today_str, is_uniform, reason_input if is_uniform == "No" else "-", now_ts])
-                st.success("Dress code status recorded successfully!")
-                st.rerun()
+                if insert_row("dk_dress_code", [new_id, selected_emp, today_str, is_uniform, reason_input if is_uniform == "No" else "-", now_ts]):
+                    st.success("Dress code status recorded successfully!")
+                    st.rerun()
 
     st.divider()
 
@@ -164,18 +178,21 @@ if mode == "Staff Entry":
     if active_task is not None:
         st.info(f"⏳ Currently Active: **{active_task['activity_type']}** (Started at {active_task['start_time']})")
         if st.button("⏹️ Stop Current Activity", type="primary"):
-            sheet = get_spreadsheet()
-            ws = sheet.worksheet("dk_live_tasks")
-            records = ws.get_all_records()
-            end_time_str = get_india_now().strftime("%I:%M %p")
-            for idx, row in enumerate(records, start=2):
-                if str(row.get("emp_name")) == str(selected_emp) and str(row.get("date")) == str(today_str) and str(row.get("status")) == "Ongoing":
-                    ws.update_cell(idx, 6, end_time_str)
-                    ws.update_cell(idx, 10, "Completed")
-                    break
-            st.cache_data.clear()
-            st.success("Activity stopped and completed successfully!")
-            st.rerun()
+            try:
+                sheet = get_spreadsheet()
+                ws = sheet.worksheet("dk_live_tasks")
+                records = ws.get_all_records()
+                end_time_str = get_india_now().strftime("%I:%M %p")
+                for idx, row in enumerate(records, start=2):
+                    if str(row.get("emp_name")) == str(selected_emp) and str(row.get("date")) == str(today_str) and str(row.get("status")) == "Ongoing":
+                        ws.update_cell(idx, 6, end_time_str)
+                        ws.update_cell(idx, 10, "Completed")
+                        break
+                st.cache_data.clear()
+                st.success("Activity stopped and completed successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error("Connection lag. Please click Stop again.")
     else:
         with st.form("start_activity_form"):
             act_type = st.selectbox("Select Activity / Task Type", ["Production", "Quality Check", "Client Meeting", "Admin Work", "Break / Lunch", "Others"])
@@ -186,9 +203,9 @@ if mode == "Staff Entry":
             if start_act_btn:
                 start_time_str = get_india_now().strftime("%I:%M %p")
                 new_task_id = len(df_tasks) + 1 if not df_tasks.empty else 1
-                insert_row("dk_live_tasks", [new_task_id, selected_emp, today_str, act_type, start_time_str, "In Progress...", "Running", desc, priority, "Ongoing"])
-                st.success(f"Started '{act_type}' successfully!")
-                st.rerun()
+                if insert_row("dk_live_tasks", [new_task_id, selected_emp, today_str, act_type, start_time_str, "In Progress...", "Running", desc, priority, "Ongoing"]):
+                    st.success(f"Started '{act_type}' successfully!")
+                    st.rerun()
 
     st.markdown(f"#### 📊 Today's Activity Timeline for {selected_emp} ({today_str})")
     if not emp_today_tasks.empty:
@@ -230,9 +247,9 @@ if mode == "Staff Entry":
             applied_ts = get_india_now().strftime("%Y-%m-%d %I:%M %p")
             df_l = fetch_df("dk_leaves")
             new_id = len(df_l) + 1
-            insert_row("dk_leaves", [new_id, selected_emp, leave_type, f_str, t_str, total_days, leave_reason, "Pending", calc_res, applied_ts])
-            st.success("Leave application submitted successfully! Status is currently **Pending**.")
-            st.rerun()
+            if insert_row("dk_leaves", [new_id, selected_emp, leave_type, f_str, t_str, total_days, leave_reason, "Pending", calc_res, applied_ts]):
+                st.success("Leave application submitted successfully! Status is currently **Pending**.")
+                st.rerun()
 
     st.markdown("#### 📅 Team Leave Schedule & Transparency Board")
     df_team_leaves = fetch_df("dk_leaves")
