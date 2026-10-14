@@ -1,7 +1,7 @@
 import streamlit as st
-from datetime import datetime, date
-import pandas as pd
 import time
+import pandas as pd
+from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from database import get_india_now, get_spreadsheet, init_db
 import gspread
@@ -13,31 +13,34 @@ st.title("📋 D.K. Enterprises - Daily Staff Tracker & Workboard")
 
 st.sidebar.header("Navigation")
 
-# Caching Data Reading for 30 Seconds
+# Caching Worksheet objects in memory to avoid repetitive sheet metadata calls
+@st.cache_resource(ttl=3600)
+def get_cached_worksheet(table_name):
+    sheet = get_spreadsheet()
+    return sheet.worksheet(table_name)
+
+# Cache data reading for 30 seconds to prevent rate limits
 @st.cache_data(ttl=30)
 def fetch_df(table_name):
     try:
-        sheet = get_spreadsheet()
-        ws = sheet.worksheet(table_name)
+        ws = get_cached_worksheet(table_name)
         records = ws.get_all_records()
         return pd.DataFrame(records)
     except Exception:
         return pd.DataFrame()
 
-# Robust Row Insert with Retry Logic
+# Robust Row Insertion with automatic 3-Attempt Retry Logic
 def insert_row(table_name, row_data):
-    sheet = get_spreadsheet()
-    ws = sheet.worksheet(table_name)
-    
-    # Retry loop if API hits quota during concurrent inserts
     for attempt in range(3):
         try:
+            ws = get_cached_worksheet(table_name)
             ws.append_row(row_data)
-            st.cache_data.clear()
+            st.cache_data.clear() # Clear data cache so UI updates immediately
             return True
         except Exception:
-            time.sleep(1)
-    st.error("Server busy! Please try clicking again in a few seconds.")
+            time.sleep(1.5) # Wait briefly before retrying if API quota is busy
+            
+    st.error("Google Sheets API busy. Please click the button again.")
     return False
 
 df_emp = fetch_df("dk_employees")
@@ -54,17 +57,18 @@ now_ist = get_india_now()
 today_str = now_ist.strftime("%Y-%m-%d")
 
 def update_attendance_checkout(emp_name, date_val, out_time):
-    try:
-        sheet = get_spreadsheet()
-        ws = sheet.worksheet("dk_attendance")
-        records = ws.get_all_records()
-        for idx, row in enumerate(records, start=2):
-            if str(row.get("emp_name")) == str(emp_name) and str(row.get("date")) == str(date_val):
-                ws.update_cell(idx, 5, out_time)
-                st.cache_data.clear()
-                return True
-    except Exception:
-        pass
+    for attempt in range(3):
+        try:
+            ws = get_cached_worksheet("dk_attendance")
+            records = ws.get_all_records()
+            for idx, row in enumerate(records, start=2):
+                if str(row.get("emp_name")) == str(emp_name) and str(row.get("date")) == str(date_val):
+                    ws.update_cell(idx, 5, out_time)
+                    st.cache_data.clear()
+                    return True
+            break
+        except Exception:
+            time.sleep(1.5)
     return False
 
 def evaluate_leave_rules(emp_name, l_type, l_days, target_date_str):
@@ -179,8 +183,7 @@ if mode == "Staff Entry":
         st.info(f"⏳ Currently Active: **{active_task['activity_type']}** (Started at {active_task['start_time']})")
         if st.button("⏹️ Stop Current Activity", type="primary"):
             try:
-                sheet = get_spreadsheet()
-                ws = sheet.worksheet("dk_live_tasks")
+                ws = get_cached_worksheet("dk_live_tasks")
                 records = ws.get_all_records()
                 end_time_str = get_india_now().strftime("%I:%M %p")
                 for idx, row in enumerate(records, start=2):
@@ -191,7 +194,7 @@ if mode == "Staff Entry":
                 st.cache_data.clear()
                 st.success("Activity stopped and completed successfully!")
                 st.rerun()
-            except Exception as e:
+            except Exception:
                 st.error("Connection lag. Please click Stop again.")
     else:
         with st.form("start_activity_form"):
@@ -280,8 +283,7 @@ elif mode == "Admin Dashboard":
                     st.write(f"**{row['emp_name']}** | {row['leave_type']} ({row['from_date']} to {row['to_date']}, {row['total_days']} days) | Reason: {row['reason']}")
                 with col_app:
                     if st.button("Approve", key=f"app_{row['leave_id']}"):
-                        sheet = get_spreadsheet()
-                        ws = sheet.worksheet("dk_leaves")
+                        ws = get_cached_worksheet("dk_leaves")
                         records = ws.get_all_records()
                         for r_idx, r_val in enumerate(records, start=2):
                             if str(r_val.get("leave_id")) == str(row['leave_id']):
@@ -292,8 +294,7 @@ elif mode == "Admin Dashboard":
                         st.rerun()
                 with col_rej:
                     if st.button("Reject", key=f"rej_{row['leave_id']}"):
-                        sheet = get_spreadsheet()
-                        ws = sheet.worksheet("dk_leaves")
+                        ws = get_cached_worksheet("dk_leaves")
                         records = ws.get_all_records()
                         for r_idx, r_val in enumerate(records, start=2):
                             if str(r_val.get("leave_id")) == str(row['leave_id']):
