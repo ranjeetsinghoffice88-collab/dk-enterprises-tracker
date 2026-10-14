@@ -39,30 +39,50 @@ def insert_row(table_name, row_data):
     st.error("Google Sheets API busy. Please click the button again.")
     return False
 
-# Smart duration calculation function in minutes
-def calculate_duration_minutes(row):
+# Exact Duration calculation logic in Minutes / Hours & Minutes
+def calculate_exact_duration(row):
     try:
         status = str(row.get('status', '')).strip()
-        start_str = row.get('start_time')
-        end_str = row.get('end_time')
+        start_str = str(row.get('start_time', '')).strip()
+        end_str = str(row.get('end_time', '')).strip()
         
-        if status == "Completed" or (end_str and "In Progress" not in str(end_str) and "Running" not in str(end_str)):
-            for fmt in ("%I:%M %p", "%H:%M", "%I:%M:%S %p", "%H:%M:%S"):
+        # Ongoing / In progress status check
+        if status == "Ongoing" or "In Progress" in end_str or "Running" in end_str or not end_str:
+            return "Running"
+        
+        # Format list to handle multiple time formats (%I:%M %p, %H:%M, etc.)
+        time_formats = ("%I:%M %p", "%H:%M", "%I:%M:%S %p", "%H:%M:%S")
+        
+        t1, t2 = None, None
+        for fmt in time_formats:
+            if not t1:
                 try:
-                    t1 = datetime.strptime(str(start_str).strip(), fmt)
-                    t2 = datetime.strptime(str(end_str).strip(), fmt)
-                    diff_seconds = (t2 - t1).total_seconds()
-                    if diff_seconds < 0:
-                        diff_seconds += 24 * 3600
-                    diff_mins = int(diff_seconds // 60)
-                    return f"{diff_mins} mins"
+                    t1 = datetime.strptime(start_str, fmt)
                 except ValueError:
-                    continue
-            return "Completed"
-        
-        return "Running"
+                    pass
+            if not t2:
+                try:
+                    t2 = datetime.strptime(end_str, fmt)
+                except ValueError:
+                    pass
+                    
+        if t1 and t2:
+            diff_seconds = (t2 - t1).total_seconds()
+            if diff_seconds < 0:
+                diff_seconds += 24 * 3600 # Overnight adjustment
+                
+            total_mins = int(diff_seconds // 60)
+            
+            if total_mins < 60:
+                return f"{total_mins} mins"
+            else:
+                hrs = total_mins // 60
+                mins = total_mins % 60
+                return f"{hrs} hr {mins} mins" if mins > 0 else f"{hrs} hr"
+                
+        return "Completed"
     except Exception:
-        return "Running"
+        return "Completed"
 
 df_emp = fetch_df("dk_employees")
 staff_list = df_emp['name'].tolist() if not df_emp.empty and 'name' in df_emp.columns else ["Komal", "Vijay", "Navinder"]
@@ -212,10 +232,10 @@ if mode == "Staff Entry":
                         temp_row = row.copy()
                         temp_row['end_time'] = end_time_str
                         temp_row['status'] = "Completed"
-                        dur_calc = calculate_duration_minutes(temp_row)
+                        dur_calc = calculate_exact_duration(temp_row)
                         
                         ws.update_cell(idx, 6, end_time_str) # End time column
-                        ws.update_cell(idx, 7, dur_calc) # Duration column
+                        ws.update_cell(idx, 7, dur_calc)     # Duration column
                         ws.update_cell(idx, 10, "Completed") # Status column
                         break
                 st.cache_data.clear()
@@ -240,7 +260,7 @@ if mode == "Staff Entry":
     st.markdown(f"#### 📊 Today's Activity Timeline for {selected_emp} ({today_str})")
     if not emp_today_tasks.empty:
         display_df = emp_today_tasks.copy()
-        display_df['duration'] = display_df.apply(calculate_duration_minutes, axis=1)
+        display_df['duration'] = display_df.apply(calculate_exact_duration, axis=1)
         st.dataframe(display_df[['activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'priority', 'status']].rename(
             columns={'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'priority': 'Priority', 'status': 'Status'}
         ), use_container_width=True, hide_index=True)
@@ -367,7 +387,7 @@ elif mode == "Admin Dashboard":
         tasks_day = df_tasks_all[df_tasks_all['date'] == date_str]
         if not tasks_day.empty:
             admin_tasks_df = tasks_day.copy()
-            admin_tasks_df['duration'] = admin_tasks_df.apply(calculate_duration_minutes, axis=1)
+            admin_tasks_df['duration'] = admin_tasks_df.apply(calculate_exact_duration, axis=1)
             st.dataframe(admin_tasks_df[['emp_name', 'activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'priority', 'status']].rename(
                 columns={'emp_name': 'Employee', 'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'priority': 'Priority', 'status': 'Status'}
             ), use_container_width=True, hide_index=True)
@@ -392,7 +412,7 @@ elif mode == "Admin Dashboard":
     if not df_tasks_all.empty:
         filtered_tasks = df_tasks_all[df_tasks_all['emp_name'].isin(f_emp_filter) & df_tasks_all['date'].between(d_from_str, d_to_str)].copy()
         if not filtered_tasks.empty:
-            filtered_tasks['duration'] = filtered_tasks.apply(calculate_duration_minutes, axis=1)
+            filtered_tasks['duration'] = filtered_tasks.apply(calculate_exact_duration, axis=1)
             st.dataframe(filtered_tasks[['date', 'emp_name', 'activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'status']].rename(
                 columns={'date': 'Date', 'emp_name': 'Employee', 'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'status': 'Status'}
             ), use_container_width=True, hide_index=True)
@@ -437,8 +457,8 @@ elif mode == "📖 Policy & User Guidelines":
 
     ### 👤 Part 1: Employee Daily Workflow
 
-    1. **Step 1: Save Your Profile & Check-In**
-       - Select your name from the sidebar and complete your daily check-in.
+    1. **Step 1: Profile Selection & Attendance**
+       - Select your profile and log your check-in and check-out timestamps.
     2. **Step 2: Live Activity Tracking**
-       - Track tasks, view real-time durations in minutes, and manage your daily workload efficiently.
+       - Track live tasks. Once stopped, exact activity durations are calculated automatically in minutes or hours.
     """)
