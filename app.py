@@ -7,11 +7,27 @@ import gspread
 
 init_db()
 
-st.set_page_config(page_title="D.K. Enterprises Staff Tracker", layout="wide")
+st.set_page_config(page_title="D.K. Enterprises - Daily Staff Tracker & Workboard", layout="wide")
 st.title("📋 D.K. Enterprises - Daily Staff Tracker & Workboard")
 
 st.sidebar.header("Navigation")
-staff_list = ["Komal", "Vijay", "Navinder"]
+
+def fetch_df(table_name):
+    client = get_gspread_client()
+    sheet = client.open("Staff_Tracker_Database")
+    ws = sheet.worksheet(table_name)
+    records = ws.get_all_records()
+    return pd.DataFrame(records)
+
+def insert_row(table_name, row_data):
+    client = get_gspread_client()
+    sheet = client.open("Staff_Tracker_Database")
+    ws = sheet.worksheet(table_name)
+    ws.append_row(row_data)
+
+df_emp = fetch_df("dk_employees")
+staff_list = df_emp['name'].tolist() if not df_emp.empty and 'name' in df_emp.columns else ["Komal", "Vijay", "Navinder"]
+
 selected_emp = st.sidebar.selectbox("Select Employee", staff_list)
 
 mode = st.sidebar.radio(
@@ -22,30 +38,14 @@ mode = st.sidebar.radio(
 now_ist = get_india_now()
 today_str = now_ist.strftime("%Y-%m-%d")
 
-# Helper to read table as DataFrame
-def fetch_df(table_name):
-    client = get_gspread_client()
-    sheet = client.open("Staff_Tracker_Database")
-    ws = sheet.worksheet(table_name)
-    records = ws.get_all_records()
-    return pd.DataFrame(records)
-
-# Helper to insert row
-def insert_row(table_name, row_data):
-    client = get_gspread_client()
-    sheet = client.open("Staff_Tracker_Database")
-    ws = sheet.worksheet(table_name)
-    ws.append_row(row_data)
-
-# Helper to update cell/row dynamically
 def update_attendance_checkout(emp_name, date_val, out_time):
     client = get_gspread_client()
     sheet = client.open("Staff_Tracker_Database")
     ws = sheet.worksheet("dk_attendance")
     records = ws.get_all_records()
-    for idx, row in enumerate(records, start=2): # row 1 is header
+    for idx, row in enumerate(records, start=2):
         if str(row.get("emp_name")) == str(emp_name) and str(row.get("date")) == str(date_val):
-            ws.update_cell(idx, 5, out_time) # column 5 is check_out
+            ws.update_cell(idx, 5, out_time)
             return True
     return False
 
@@ -60,7 +60,6 @@ def evaluate_leave_rules(emp_name, l_type, l_days, target_date_str):
     
     if not df_leaves.empty and 'emp_name' in df_leaves.columns:
         if l_type == "Planned Leave":
-            # Filter for same month/year & approved/pending
             month_planned_count = 0
             for _, r in df_leaves.iterrows():
                 if str(r['emp_name']) == emp_name and str(r['leave_type']) == 'Planned Leave' and str(r['status']) != 'Rejected':
@@ -103,7 +102,6 @@ if mode == "Staff Entry":
             if already_in:
                 st.warning("Already checked in today!")
             else:
-                # find next id
                 new_id = len(df_att) + 1
                 insert_row("dk_attendance", [new_id, selected_emp, today_str, now_time, ""])
                 st.success(f"Checked in successfully at {now_time}")
@@ -142,6 +140,57 @@ if mode == "Staff Entry":
                 insert_row("dk_dress_code", [new_id, selected_emp, today_str, is_uniform, reason_input if is_uniform == "No" else "-", now_ts])
                 st.success("Dress code status recorded successfully!")
                 st.rerun()
+
+    st.divider()
+
+    st.markdown("### ⏱️ Live Activity Tracker")
+    df_tasks = fetch_df("dk_live_tasks")
+    emp_today_tasks = pd.DataFrame()
+    if not df_tasks.empty and 'emp_name' in df_tasks.columns:
+        emp_today_tasks = df_tasks[(df_tasks['emp_name'] == selected_emp) & (df_tasks['date'] == today_str)]
+
+    active_task = None
+    if not emp_today_tasks.empty and 'status' in emp_today_tasks.columns:
+        act_match = emp_today_tasks[emp_today_tasks['status'] == 'Ongoing']
+        if not act_match.empty:
+            active_task = act_match.iloc[0]
+
+    if active_task is not None:
+        st.info(f"⏳ Currently Active: **{active_task['activity_type']}** (Started at {active_task['start_time']})")
+        if st.button("⏹️ Stop Current Activity", type="primary"):
+            client = get_gspread_client()
+            sheet = client.open("Staff_Tracker_Database")
+            ws = sheet.worksheet("dk_live_tasks")
+            records = ws.get_all_records()
+            end_time_str = get_india_now().strftime("%I:%M %p")
+            for idx, row in enumerate(records, start=2):
+                if str(row.get("emp_name")) == str(selected_emp) and str(row.get("date")) == str(today_str) and str(row.get("status")) == "Ongoing":
+                    ws.update_cell(idx, 6, end_time_str)
+                    ws.update_cell(idx, 10, "Completed")
+                    break
+            st.success("Activity stopped and completed successfully!")
+            st.rerun()
+    else:
+        with st.form("start_activity_form"):
+            act_type = st.selectbox("Select Activity / Task Type", ["Production", "Quality Check", "Client Meeting", "Admin Work", "Break / Lunch", "Others"])
+            priority = st.selectbox("Priority", ["Low", "Medium", "High", "Urgent"])
+            desc = st.text_input("Task Description / Notes", placeholder="e.g., Working on client order processing...")
+            start_act_btn = st.form_submit_button("▶️ Start New Activity")
+
+            if start_act_btn:
+                start_time_str = get_india_now().strftime("%I:%M %p")
+                new_task_id = len(df_tasks) + 1 if not df_tasks.empty else 1
+                insert_row("dk_live_tasks", [new_task_id, selected_emp, today_str, act_type, start_time_str, "In Progress...", "Running", desc, priority, "Ongoing"])
+                st.success(f"Started '{act_type}' successfully!")
+                st.rerun()
+
+    st.markdown(f"#### 📊 Today's Activity Timeline for {selected_emp} ({today_str})")
+    if not emp_today_tasks.empty:
+        st.dataframe(emp_today_tasks[['activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'priority', 'status']].rename(
+            columns={'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'priority': 'Priority', 'status': 'Status'}
+        ), use_container_width=True, hide_index=True)
+    else:
+        st.info("No activities recorded for today yet.")
 
     st.divider()
 
@@ -193,24 +242,180 @@ if mode == "Staff Entry":
 # VIEW 2: ADMIN DASHBOARD
 # ---------------------------------------------------------
 elif mode == "Admin Dashboard":
-    st.subheader("🔒 Admin Dashboard")
+    st.subheader("🔒 Admin Dashboard (Time, Dress Code, Leave Approvals & History)")
     selected_date = st.date_input("Select Single Date View", now_ist.date())
     date_str = selected_date.strftime("%Y-%m-%d")
 
-    st.markdown("### 📥 Pending Leave Requests")
+    st.markdown("### 📥 Pending Leave Requests (Approval Panel)")
     df_leaves_all = fetch_df("dk_leaves")
     if not df_leaves_all.empty and 'status' in df_leaves_all.columns:
         df_pend = df_leaves_all[df_leaves_all['status'] == 'Pending']
         if not df_pend.empty:
-            st.dataframe(df_pend, use_container_width=True, hide_index=True)
+            for idx, row in df_pend.iterrows():
+                col_info, col_app, col_rej = st.columns([4, 1, 1])
+                with col_info:
+                    st.write(f"**{row['emp_name']}** | {row['leave_type']} ({row['from_date']} to {row['to_date']}, {row['total_days']} days) | Reason: {row['reason']}")
+                with col_app:
+                    if st.button("Approve", key=f"app_{row['leave_id']}"):
+                        client = get_gspread_client()
+                        sheet = client.open("Staff_Tracker_Database")
+                        ws = sheet.worksheet("dk_leaves")
+                        records = ws.get_all_records()
+                        for r_idx, r_val in enumerate(records, start=2):
+                            if str(r_val.get("leave_id")) == str(row['leave_id']):
+                                ws.update_cell(r_idx, 8, "Approved")
+                                break
+                        st.success("Approved!")
+                        st.rerun()
+                with col_rej:
+                    if st.button("Reject", key=f"rej_{row['leave_id']}"):
+                        client = get_gspread_client()
+                        sheet = client.open("Staff_Tracker_Database")
+                        ws = sheet.worksheet("dk_leaves")
+                        records = ws.get_all_records()
+                        for r_idx, r_val in enumerate(records, start=2):
+                            if str(r_val.get("leave_id")) == str(row['leave_id']):
+                                ws.update_cell(r_idx, 8, "Rejected")
+                                break
+                        st.warning("Rejected!")
+                        st.rerun()
         else:
             st.info("No pending leave requests right now.")
     else:
         st.info("No leave requests found.")
+
+    st.divider()
+
+    st.markdown(f"### 📅 Attendance Summary for {date_str}")
+    df_att_all = fetch_df("dk_attendance")
+    if not df_att_all.empty and 'date' in df_att_all.columns:
+        att_day = df_att_all[df_att_all['date'] == date_str]
+        if not att_day.empty:
+            st.dataframe(att_day[['emp_name', 'check_in', 'check_out']].rename(columns={'emp_name': 'Employee', 'check_in': 'Check In', 'check_out': 'Check Out'}), use_container_width=True, hide_index=True)
+        else:
+            st.info("No attendance records for this date.")
+    else:
+        st.info("No attendance data found.")
+
+    st.markdown(f"### 👔 Uniform Compliance Summary for {date_str}")
+    df_dress_all = fetch_df("dk_dress_code")
+    if not df_dress_all.empty and 'date' in df_dress_all.columns:
+        dress_day = df_dress_all[df_dress_all['date'] == date_str]
+        if not dress_day.empty:
+            st.dataframe(dress_day[['emp_name', 'in_uniform', 'reason', 'timestamp']].rename(columns={'emp_name': 'Employee', 'in_uniform': 'In Uniform', 'reason': 'Reason / Note', 'timestamp': 'Submitted At'}), use_container_width=True, hide_index=True)
+        else:
+            st.info("No dress code entries for this date.")
+    else:
+        st.info("No dress code data found.")
+
+    st.markdown(f"### ⏱️ Live Staff Activity & Break Timeline for {date_str}")
+    df_tasks_all = fetch_df("dk_live_tasks")
+    if not df_tasks_all.empty and 'date' in df_tasks_all.columns:
+        tasks_day = df_tasks_all[df_tasks_all['date'] == date_str]
+        if not tasks_day.empty:
+            st.dataframe(tasks_day[['emp_name', 'activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'priority', 'status']].rename(
+                columns={'emp_name': 'Employee', 'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'priority': 'Priority', 'status': 'Status'}
+            ), use_container_width=True, hide_index=True)
+        else:
+            st.info("No activities recorded for this date.")
+    else:
+        st.info("No task activity data found.")
+
+    st.divider()
+    st.markdown("### 🔍 Past Data History Search & Filter")
+    f_emp_filter = st.multiselect("Filter Employee(s)", staff_list, default=staff_list)
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        d_from = st.date_input("From Date", now_ist.date())
+    with col_f2:
+        d_to = st.date_input("To Date", now_ist.date())
+        
+    d_from_str = d_from.strftime("%Y-%m-%d")
+    d_to_str = d_to.strftime("%Y-%m-%d")
+    
+    st.markdown(f"#### 📜 Activity History ({d_from_str} to {d_to_str})")
+    if not df_tasks_all.empty:
+        filtered_tasks = df_tasks_all[df_tasks_all['emp_name'].isin(f_emp_filter) & df_tasks_all['date'].between(d_from_str, d_to_str)]
+        if not filtered_tasks.empty:
+            st.dataframe(filtered_tasks[['date', 'emp_name', 'activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'status']].rename(
+                columns={'date': 'Date', 'emp_name': 'Employee', 'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'status': 'Status'}
+            ), use_container_width=True, hide_index=True)
+        else:
+            st.info("No records found in this date range.")
+
+    st.markdown(f"#### 🌴 Leave History ({d_from_str} to {d_to_str})")
+    if not df_leaves_all.empty:
+        filtered_leaves = df_leaves_all[df_leaves_all['emp_name'].isin(f_emp_filter)]
+        if not filtered_leaves.empty:
+            st.dataframe(filtered_leaves[['from_date', 'to_date', 'emp_name', 'leave_type', 'total_days', 'status', 'calculated_type', 'reason']].rename(
+                columns={'from_date': 'From', 'to_date': 'To', 'emp_name': 'Employee', 'leave_type': 'Type', 'total_days': 'Days', 'status': 'Status', 'calculated_type': 'Policy Applied', 'reason': 'Reason'}
+            ), use_container_width=True, hide_index=True)
+        else:
+            st.info("No leave records found in this range.")
+
+    st.divider()
+    st.markdown("### 📥 Download Database Backup CSVs")
+    col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+    with col_c1:
+        if not df_att_all.empty:
+            st.download_button("📥 Attendance CSV", df_att_all.to_csv(index=False), "dk_attendance_backup.csv", "text/csv")
+    with col_c2:
+        if not df_tasks_all.empty:
+            st.download_button("📥 Tasks CSV", df_tasks_all.to_csv(index=False), "dk_tasks_backup.csv", "text/csv")
+    with col_c3:
+        if not df_dress_all.empty:
+            st.download_button("📥 Dress Code CSV", df_dress_all.to_csv(index=False), "dk_dress_code_backup.csv", "text/csv")
+    with col_c4:
+        if not df_leaves_all.empty:
+            st.download_button("📥 Leave Records CSV", df_leaves_all.to_csv(index=False), "dk_leaves_backup.csv", "text/csv")
 
 # ---------------------------------------------------------
 # VIEW 3: POLICY & GUIDELINES
 # ---------------------------------------------------------
 elif mode == "📖 Policy & User Guidelines":
     st.subheader("📖 D.K. Enterprises - Tracker User Manual & Corporate Policies")
-    st.markdown("This guide provides step-by-step instructions for utilizing the staff tracker and understanding company leave rules.")
+    st.markdown("""
+    This user guide provides step-by-step instructions for employees and management to effectively utilize the staff tracker and understand company policies.
+
+    ---
+
+    ### 👤 Part 1: Employee Daily Workflow
+
+    1. **Step 1: Select Your Profile**
+       - Open the sidebar on the left and select your name from the **'Select Employee'** dropdown.
+    2. **Step 2: Morning Check-In**
+       - Upon arrival at the office, navigate to **Staff Entry** mode and click the 🟢 **Morning Check-In** button to log your arrival timestamp.
+    3. **Step 3: Dress Code Verification**
+       - Submit your daily uniform verification (**Yes, Full Uniform** or **No / Casual**). If not wearing the prescribed uniform, provide a valid reason before submitting.
+    4. **Step 4: Live Activity Tracking**
+       - Select your current activity type (e.g., **Production, Break, or Others**) and click ▶️ **Start Activity Now**.
+       - *Note:* Initiating a new activity automatically concludes and calculates the duration of the previous task. Click ⏹️ **Stop Current Activity** when completing your work session.
+    5. **Step 5: Evening Check-Out**
+       - At the end of your shift, click the 🔴 **Evening Check-Out** button to complete your daily log.
+
+    ---
+
+    ### 🌴 Part 2: Leave Application & Corporate Leave Rules
+
+    * **Flexible Calendar Leave Requests:** Employees can apply for future planned leaves or log past unrecorded leaves using the flexible date picker calendar.
+    * **Pending Status Workflow:** All submitted leave applications remain in **'Pending'** status until reviewed and approved by management.
+    * **Team Transparency Board:** The public Team Leave Board allows all team members to view upcoming leave schedules, ensuring smooth operational planning and workload management.
+
+    **Corporate Leave Rules & Limits:**
+    1. **Planned Leave Quota:** Each employee is entitled to **2 Planned Leaves** per month. Any additional planned leave requests will trigger a system notice and be categorized as **Unplanned / LWP**.
+    2. **Annual Sick Leave Quota:** Employees receive an annual entitlement of **7 Sick Leaves**. Once exhausted, subsequent sick leaves follow standard leave evaluation policies.
+    3. **Unplanned Leaves & LWP:** Unplanned absences exceeding allowed limits will be processed as Leave Without Pay (LWP).
+
+    ---
+
+    ### 🔒 Part 3: Management & Admin Review Guide
+
+    In **Admin Dashboard** mode, management has access to the following oversight controls:
+
+    1. **Leave Approval Panel:**
+       - Review all pending leave submissions, view policy calculations, and update request statuses to **'Approved'** or **'Rejected'**.
+    2. **Daily Attendance & Uniform Compliance:**
+       - Access daily attendance timestamps and uniform compliance logs for any selected date.
+    3. **Historical Data & CSV Backups:**
+       - Filter activity logs by date ranges and download secure CSV backups for attendance, task timelines, uniform records, and leave histories.
+    """)
