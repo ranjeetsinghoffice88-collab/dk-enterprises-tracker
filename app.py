@@ -13,13 +13,11 @@ st.title("📋 D.K. Enterprises - Daily Staff Tracker & Workboard")
 
 st.sidebar.header("Navigation")
 
-# Caching Worksheet objects in memory to avoid repetitive sheet metadata calls
 @st.cache_resource(ttl=3600)
 def get_cached_worksheet(table_name):
     sheet = get_spreadsheet()
     return sheet.worksheet(table_name)
 
-# Cache data reading for 30 seconds to prevent rate limits
 @st.cache_data(ttl=30)
 def fetch_df(table_name):
     try:
@@ -29,19 +27,42 @@ def fetch_df(table_name):
     except Exception:
         return pd.DataFrame()
 
-# Robust Row Insertion with automatic 3-Attempt Retry Logic
 def insert_row(table_name, row_data):
     for attempt in range(3):
         try:
             ws = get_cached_worksheet(table_name)
             ws.append_row(row_data)
-            st.cache_data.clear() # Clear data cache so UI updates immediately
+            st.cache_data.clear()
             return True
         except Exception:
-            time.sleep(1.5) # Wait briefly before retrying if API quota is busy
-            
+            time.sleep(1.5)
     st.error("Google Sheets API busy. Please click the button again.")
     return False
+
+# Smart duration calculation function in minutes
+def calculate_duration_minutes(row):
+    try:
+        status = str(row.get('status', '')).strip()
+        start_str = row.get('start_time')
+        end_str = row.get('end_time')
+        
+        if status == "Completed" or (end_str and "In Progress" not in str(end_str) and "Running" not in str(end_str)):
+            for fmt in ("%I:%M %p", "%H:%M", "%I:%M:%S %p", "%H:%M:%S"):
+                try:
+                    t1 = datetime.strptime(str(start_str).strip(), fmt)
+                    t2 = datetime.strptime(str(end_str).strip(), fmt)
+                    diff_seconds = (t2 - t1).total_seconds()
+                    if diff_seconds < 0:
+                        diff_seconds += 24 * 3600
+                    diff_mins = int(diff_seconds // 60)
+                    return f"{diff_mins} mins"
+                except ValueError:
+                    continue
+            return "Completed"
+        
+        return "Running"
+    except Exception:
+        return "Running"
 
 df_emp = fetch_df("dk_employees")
 staff_list = df_emp['name'].tolist() if not df_emp.empty and 'name' in df_emp.columns else ["Komal", "Vijay", "Navinder"]
@@ -188,8 +209,14 @@ if mode == "Staff Entry":
                 end_time_str = get_india_now().strftime("%I:%M %p")
                 for idx, row in enumerate(records, start=2):
                     if str(row.get("emp_name")) == str(selected_emp) and str(row.get("date")) == str(today_str) and str(row.get("status")) == "Ongoing":
-                        ws.update_cell(idx, 6, end_time_str)
-                        ws.update_cell(idx, 10, "Completed")
+                        temp_row = row.copy()
+                        temp_row['end_time'] = end_time_str
+                        temp_row['status'] = "Completed"
+                        dur_calc = calculate_duration_minutes(temp_row)
+                        
+                        ws.update_cell(idx, 6, end_time_str) # End time column
+                        ws.update_cell(idx, 7, dur_calc) # Duration column
+                        ws.update_cell(idx, 10, "Completed") # Status column
                         break
                 st.cache_data.clear()
                 st.success("Activity stopped and completed successfully!")
@@ -212,7 +239,9 @@ if mode == "Staff Entry":
 
     st.markdown(f"#### 📊 Today's Activity Timeline for {selected_emp} ({today_str})")
     if not emp_today_tasks.empty:
-        st.dataframe(emp_today_tasks[['activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'priority', 'status']].rename(
+        display_df = emp_today_tasks.copy()
+        display_df['duration'] = display_df.apply(calculate_duration_minutes, axis=1)
+        st.dataframe(display_df[['activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'priority', 'status']].rename(
             columns={'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'priority': 'Priority', 'status': 'Status'}
         ), use_container_width=True, hide_index=True)
     else:
@@ -337,7 +366,9 @@ elif mode == "Admin Dashboard":
     if not df_tasks_all.empty and 'date' in df_tasks_all.columns:
         tasks_day = df_tasks_all[df_tasks_all['date'] == date_str]
         if not tasks_day.empty:
-            st.dataframe(tasks_day[['emp_name', 'activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'priority', 'status']].rename(
+            admin_tasks_df = tasks_day.copy()
+            admin_tasks_df['duration'] = admin_tasks_df.apply(calculate_duration_minutes, axis=1)
+            st.dataframe(admin_tasks_df[['emp_name', 'activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'priority', 'status']].rename(
                 columns={'emp_name': 'Employee', 'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'priority': 'Priority', 'status': 'Status'}
             ), use_container_width=True, hide_index=True)
         else:
@@ -359,8 +390,9 @@ elif mode == "Admin Dashboard":
     
     st.markdown(f"#### 📜 Activity History ({d_from_str} to {d_to_str})")
     if not df_tasks_all.empty:
-        filtered_tasks = df_tasks_all[df_tasks_all['emp_name'].isin(f_emp_filter) & df_tasks_all['date'].between(d_from_str, d_to_str)]
+        filtered_tasks = df_tasks_all[df_tasks_all['emp_name'].isin(f_emp_filter) & df_tasks_all['date'].between(d_from_str, d_to_str)].copy()
         if not filtered_tasks.empty:
+            filtered_tasks['duration'] = filtered_tasks.apply(calculate_duration_minutes, axis=1)
             st.dataframe(filtered_tasks[['date', 'emp_name', 'activity_type', 'start_time', 'end_time', 'duration', 'task_desc', 'status']].rename(
                 columns={'date': 'Date', 'emp_name': 'Employee', 'activity_type': 'Activity', 'start_time': 'Start Time', 'end_time': 'End Time', 'duration': 'Duration', 'task_desc': 'Description', 'status': 'Status'}
             ), use_container_width=True, hide_index=True)
@@ -405,41 +437,8 @@ elif mode == "📖 Policy & User Guidelines":
 
     ### 👤 Part 1: Employee Daily Workflow
 
-    1. **Step 1: Select Your Profile**
-       - Open the sidebar on the left and select your name from the **'Select Employee'** dropdown.
-    2. **Step 2: Morning Check-In**
-       - Upon arrival at the office, navigate to **Staff Entry** mode and click the 🟢 **Morning Check-In** button to log your arrival timestamp.
-    3. **Step 3: Dress Code Verification**
-       - Submit your daily uniform verification (**Yes, Full Uniform** or **No / Casual**). If not wearing the prescribed uniform, provide a valid reason before submitting.
-    4. **Step 4: Live Activity Tracking**
-       - Select your current activity type (e.g., **Production, Break, or Others**) and click ▶️ **Start Activity Now**.
-       - *Note:* Initiating a new activity automatically concludes and calculates the duration of the previous task. Click ⏹️ **Stop Current Activity** when completing your work session.
-    5. **Step 5: Evening Check-Out**
-       - At the end of your shift, click the 🔴 **Evening Check-Out** button to complete your daily log.
-
-    ---
-
-    ### 🌴 Part 2: Leave Application & Corporate Leave Rules
-
-    * **Flexible Calendar Leave Requests:** Employees can apply for future planned leaves or log past unrecorded leaves using the flexible date picker calendar.
-    * **Pending Status Workflow:** All submitted leave applications remain in **'Pending'** status until reviewed and approved by management.
-    * **Team Transparency Board:** The public Team Leave Board allows all team members to view upcoming leave schedules, ensuring smooth operational planning and workload management.
-
-    **Corporate Leave Rules & Limits:**
-    1. **Planned Leave Quota:** Each employee is entitled to **2 Planned Leaves** per month. Any additional planned leave requests will trigger a system notice and be categorized as **Unplanned / LWP**.
-    2. **Annual Sick Leave Quota:** Employees receive an annual entitlement of **7 Sick Leaves**. Once exhausted, subsequent sick leaves follow standard leave evaluation policies.
-    3. **Unplanned Leaves & LWP:** Unplanned absences exceeding allowed limits will be processed as Leave Without Pay (LWP).
-
-    ---
-
-    ### 🔒 Part 3: Management & Admin Review Guide
-
-    In **Admin Dashboard** mode, management has access to the following oversight controls:
-
-    1. **Leave Approval Panel:**
-       - Review all pending leave submissions, view policy calculations, and update request statuses to **'Approved'** or **'Rejected'**.
-    2. **Daily Attendance & Uniform Compliance:**
-       - Access daily attendance timestamps and uniform compliance logs for any selected date.
-    3. **Historical Data & CSV Backups:**
-       - Filter activity logs by date ranges and download secure CSV backups for attendance, task timelines, uniform records, and leave histories.
+    1. **Step 1: Save Your Profile & Check-In**
+       - Select your name from the sidebar and complete your daily check-in.
+    2. **Step 2: Live Activity Tracking**
+       - Track tasks, view real-time durations in minutes, and manage your daily workload efficiently.
     """)
