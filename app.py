@@ -2,7 +2,7 @@ import streamlit as st
 from datetime import datetime, date
 import pandas as pd
 from zoneinfo import ZoneInfo
-from database import get_india_now, get_gspread_client, init_db
+from database import get_india_now, get_spreadsheet, init_db
 import gspread
 
 init_db()
@@ -12,42 +12,22 @@ st.title("📋 D.K. Enterprises - Daily Staff Tracker & Workboard")
 
 st.sidebar.header("Navigation")
 
-# Cached Google Sheet Reader to Prevent Quota Limit (429 Error)
-@st.cache_data(ttl=10)
+# Cache sheet data for 60 seconds to prevent 429 Quota Exceeded error
+@st.cache_data(ttl=60)
 def fetch_df(table_name):
     try:
-        client = get_gspread_client()
-        sheet = client.open("Staff_Tracker_Database")
-        
-        try:
-            ws = sheet.worksheet(table_name)
-        except gspread.exceptions.WorksheetNotFound:
-            expected_headers = {
-                "dk_employees": ["emp_id", "name", "department"],
-                "dk_attendance": ["id", "emp_name", "date", "check_in", "check_out"],
-                "dk_live_tasks": ["task_id", "emp_name", "date", "activity_type", "start_time", "end_time", "duration", "task_desc", "priority", "status"],
-                "dk_dress_code": ["id", "emp_name", "date", "in_uniform", "reason", "timestamp"],
-                "dk_leaves": ["leave_id", "emp_name", "leave_type", "from_date", "to_date", "total_days", "reason", "status", "calculated_type", "applied_at"],
-                "gen_employees": ["emp_id", "name", "department"],
-                "gen_attendance": ["id", "emp_name", "date", "check_in", "check_out"],
-                "gen_live_tasks": ["task_id", "emp_name", "date", "activity_type", "start_time", "end_time", "duration", "task_desc", "priority", "status"],
-                "gen_dress_code": ["id", "emp_name", "date", "in_uniform", "reason", "timestamp"],
-                "gen_leaves": ["leave_id", "emp_name", "leave_type", "from_date", "to_date", "total_days", "reason", "status", "calculated_type", "applied_at"]
-            }
-            ws = sheet.add_worksheet(title=table_name, rows=1000, cols=20)
-            ws.append_row(expected_headers.get(table_name, []))
-            
+        sheet = get_spreadsheet()
+        ws = sheet.worksheet(table_name)
         records = ws.get_all_records()
         return pd.DataFrame(records)
-    except Exception as e:
+    except Exception:
         return pd.DataFrame()
 
 def insert_row(table_name, row_data):
-    client = get_gspread_client()
-    sheet = client.open("Staff_Tracker_Database")
+    sheet = get_spreadsheet()
     ws = sheet.worksheet(table_name)
     ws.append_row(row_data)
-    st.cache_data.clear() # Clear cache on new insert so data reflects instantly
+    st.cache_data.clear()
 
 df_emp = fetch_df("dk_employees")
 staff_list = df_emp['name'].tolist() if not df_emp.empty and 'name' in df_emp.columns else ["Komal", "Vijay", "Navinder"]
@@ -63,8 +43,7 @@ now_ist = get_india_now()
 today_str = now_ist.strftime("%Y-%m-%d")
 
 def update_attendance_checkout(emp_name, date_val, out_time):
-    client = get_gspread_client()
-    sheet = client.open("Staff_Tracker_Database")
+    sheet = get_spreadsheet()
     ws = sheet.worksheet("dk_attendance")
     records = ws.get_all_records()
     for idx, row in enumerate(records, start=2):
@@ -185,8 +164,7 @@ if mode == "Staff Entry":
     if active_task is not None:
         st.info(f"⏳ Currently Active: **{active_task['activity_type']}** (Started at {active_task['start_time']})")
         if st.button("⏹️ Stop Current Activity", type="primary"):
-            client = get_gspread_client()
-            sheet = client.open("Staff_Tracker_Database")
+            sheet = get_spreadsheet()
             ws = sheet.worksheet("dk_live_tasks")
             records = ws.get_all_records()
             end_time_str = get_india_now().strftime("%I:%M %p")
@@ -285,8 +263,7 @@ elif mode == "Admin Dashboard":
                     st.write(f"**{row['emp_name']}** | {row['leave_type']} ({row['from_date']} to {row['to_date']}, {row['total_days']} days) | Reason: {row['reason']}")
                 with col_app:
                     if st.button("Approve", key=f"app_{row['leave_id']}"):
-                        client = get_gspread_client()
-                        sheet = client.open("Staff_Tracker_Database")
+                        sheet = get_spreadsheet()
                         ws = sheet.worksheet("dk_leaves")
                         records = ws.get_all_records()
                         for r_idx, r_val in enumerate(records, start=2):
@@ -298,8 +275,7 @@ elif mode == "Admin Dashboard":
                         st.rerun()
                 with col_rej:
                     if st.button("Reject", key=f"rej_{row['leave_id']}"):
-                        client = get_gspread_client()
-                        sheet = client.open("Staff_Tracker_Database")
+                        sheet = get_spreadsheet()
                         ws = sheet.worksheet("dk_leaves")
                         records = ws.get_all_records()
                         for r_idx, r_val in enumerate(records, start=2):
