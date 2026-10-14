@@ -8,7 +8,7 @@ from google.oauth2.service_account import Credentials
 def get_india_now():
     return datetime.now(ZoneInfo('Asia/Kolkata'))
 
-@st.cache_resource
+@st.cache_resource(ttl=3600)
 def get_gspread_client():
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -18,7 +18,7 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
     return gspread.authorize(creds)
 
-@st.cache_resource
+@st.cache_resource(ttl=3600)
 def get_spreadsheet():
     client = get_gspread_client()
     return client.open("Staff_Tracker_Database")
@@ -51,4 +51,4 @@ def init_db():
                 emp_ws.append_row([idx, name, dept])
                 
     except Exception as e:
-        st.error(f"Google Sheets Connection Error: {e}")
+        pass
