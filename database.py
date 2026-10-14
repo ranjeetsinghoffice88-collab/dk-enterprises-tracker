@@ -8,6 +8,7 @@ from google.oauth2.service_account import Credentials
 def get_india_now():
     return datetime.now(ZoneInfo('Asia/Kolkata'))
 
+@st.cache_resource
 def get_gspread_client():
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -15,14 +16,16 @@ def get_gspread_client():
     ]
     credentials_dict = dict(st.secrets["gcp_service_account"])
     creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
-    client = gspread.authorize(creds)
-    return client
+    return gspread.authorize(creds)
+
+@st.cache_resource
+def get_spreadsheet():
+    client = get_gspread_client()
+    return client.open("Staff_Tracker_Database")
 
 def init_db():
     try:
-        client = get_gspread_client()
-        sheet = client.open("Staff_Tracker_Database")
-        
+        sheet = get_spreadsheet()
         expected_tables = {
             "dk_employees": ["emp_id", "name", "department"],
             "dk_attendance": ["id", "emp_name", "date", "check_in", "check_out"],
