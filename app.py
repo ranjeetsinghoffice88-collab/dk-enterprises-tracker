@@ -12,18 +12,42 @@ st.title("📋 D.K. Enterprises - Daily Staff Tracker & Workboard")
 
 st.sidebar.header("Navigation")
 
+# Cached Google Sheet Reader to Prevent Quota Limit (429 Error)
+@st.cache_data(ttl=10)
 def fetch_df(table_name):
-    client = get_gspread_client()
-    sheet = client.open("Staff_Tracker_Database")
-    ws = sheet.worksheet(table_name)
-    records = ws.get_all_records()
-    return pd.DataFrame(records)
+    try:
+        client = get_gspread_client()
+        sheet = client.open("Staff_Tracker_Database")
+        
+        try:
+            ws = sheet.worksheet(table_name)
+        except gspread.exceptions.WorksheetNotFound:
+            expected_headers = {
+                "dk_employees": ["emp_id", "name", "department"],
+                "dk_attendance": ["id", "emp_name", "date", "check_in", "check_out"],
+                "dk_live_tasks": ["task_id", "emp_name", "date", "activity_type", "start_time", "end_time", "duration", "task_desc", "priority", "status"],
+                "dk_dress_code": ["id", "emp_name", "date", "in_uniform", "reason", "timestamp"],
+                "dk_leaves": ["leave_id", "emp_name", "leave_type", "from_date", "to_date", "total_days", "reason", "status", "calculated_type", "applied_at"],
+                "gen_employees": ["emp_id", "name", "department"],
+                "gen_attendance": ["id", "emp_name", "date", "check_in", "check_out"],
+                "gen_live_tasks": ["task_id", "emp_name", "date", "activity_type", "start_time", "end_time", "duration", "task_desc", "priority", "status"],
+                "gen_dress_code": ["id", "emp_name", "date", "in_uniform", "reason", "timestamp"],
+                "gen_leaves": ["leave_id", "emp_name", "leave_type", "from_date", "to_date", "total_days", "reason", "status", "calculated_type", "applied_at"]
+            }
+            ws = sheet.add_worksheet(title=table_name, rows=1000, cols=20)
+            ws.append_row(expected_headers.get(table_name, []))
+            
+        records = ws.get_all_records()
+        return pd.DataFrame(records)
+    except Exception as e:
+        return pd.DataFrame()
 
 def insert_row(table_name, row_data):
     client = get_gspread_client()
     sheet = client.open("Staff_Tracker_Database")
     ws = sheet.worksheet(table_name)
     ws.append_row(row_data)
+    st.cache_data.clear() # Clear cache on new insert so data reflects instantly
 
 df_emp = fetch_df("dk_employees")
 staff_list = df_emp['name'].tolist() if not df_emp.empty and 'name' in df_emp.columns else ["Komal", "Vijay", "Navinder"]
@@ -46,6 +70,7 @@ def update_attendance_checkout(emp_name, date_val, out_time):
     for idx, row in enumerate(records, start=2):
         if str(row.get("emp_name")) == str(emp_name) and str(row.get("date")) == str(date_val):
             ws.update_cell(idx, 5, out_time)
+            st.cache_data.clear()
             return True
     return False
 
@@ -105,6 +130,7 @@ if mode == "Staff Entry":
                 new_id = len(df_att) + 1
                 insert_row("dk_attendance", [new_id, selected_emp, today_str, now_time, ""])
                 st.success(f"Checked in successfully at {now_time}")
+                st.rerun()
 
     with col2:
         if st.button("🔴 Evening Check-Out", use_container_width=True):
@@ -112,6 +138,7 @@ if mode == "Staff Entry":
             success = update_attendance_checkout(selected_emp, today_str, now_time)
             if success:
                 st.success(f"Checked out successfully at {now_time}")
+                st.rerun()
             else:
                 st.warning("No check-in record found for today!")
 
@@ -125,8 +152,8 @@ if mode == "Staff Entry":
         if not matched.empty:
             today_dress = matched.iloc[0]
 
-    if today_dress is not None:
-        st.success(f"✅ Today's Uniform Status Submitted: **{today_dress['in_uniform']}**" + (f" (Reason: {today_dress['reason']})" if today_dress['reason'] else ""))
+    if today_dress is not None and not today_dress.empty:
+        st.success(f"✅ Today's Uniform Status Submitted: **{today_dress.get('in_uniform', 'Yes')}**")
     else:
         with st.form("dress_code_form", clear_on_submit=False):
             dress_opt = st.radio("Are you wearing the official office uniform / dress code today?", ["Yes, Full Uniform 🟢", "No / Casual / Partial 🔴"], horizontal=True)
@@ -168,6 +195,7 @@ if mode == "Staff Entry":
                     ws.update_cell(idx, 6, end_time_str)
                     ws.update_cell(idx, 10, "Completed")
                     break
+            st.cache_data.clear()
             st.success("Activity stopped and completed successfully!")
             st.rerun()
     else:
@@ -265,6 +293,7 @@ elif mode == "Admin Dashboard":
                             if str(r_val.get("leave_id")) == str(row['leave_id']):
                                 ws.update_cell(r_idx, 8, "Approved")
                                 break
+                        st.cache_data.clear()
                         st.success("Approved!")
                         st.rerun()
                 with col_rej:
@@ -277,6 +306,7 @@ elif mode == "Admin Dashboard":
                             if str(r_val.get("leave_id")) == str(row['leave_id']):
                                 ws.update_cell(r_idx, 8, "Rejected")
                                 break
+                        st.cache_data.clear()
                         st.warning("Rejected!")
                         st.rerun()
         else:
